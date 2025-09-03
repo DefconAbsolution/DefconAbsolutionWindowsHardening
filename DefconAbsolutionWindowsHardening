@@ -1,0 +1,215 @@
+<#
+    DEFCON Absolution Mode – Windows 11 Kill Script
+    ------------------------------------------------
+    - Security updates only
+    - Firewall lockdown + Lumma C2 blocks
+    - Remove ALL bloat apps (leave MS Store + Office)
+    - Remove AI (Copilot, Recall, Cortana)
+    - Disable RDP entirely
+    - Set current user = Administrator role
+    - Enable built-in Administrator account
+    - Password policy: min length = 1, complexity off
+    - DEP AlwaysOn, LSA PPL, UAC strict
+    - Nukes telemetry
+    - Logs everything
+    - Offers reboot
+#>
+
+#region Admin Check
+if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+    Write-Warning "Run this script as Administrator."
+    exit 1
+}
+#endregion
+
+#region Prep Directories + Logging
+$TempDir   = "C:\Temp"
+$BackupDir = "$env:USERPROFILE\Desktop\HardeningBackup"
+New-Item -Path $TempDir   -ItemType Directory -Force | Out-Null
+New-Item -Path $BackupDir -ItemType Directory -Force | Out-Null
+Start-Transcript -Path "$TempDir\DEFCON_Hardening_$(Get-Date -Format 'yyyyMMdd_HHmmss').log" -Force
+#endregion
+
+#region Windows Update – Security Updates Only
+Write-Host "⚙️ Running Security Updates only..."
+if (-not (Get-Module -ListAvailable -Name PSWindowsUpdate)) {
+    Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force
+    Install-Module PSWindowsUpdate -Force -Confirm:$false
+}
+Import-Module PSWindowsUpdate
+Get-WindowsUpdate -Category SecurityUpdates -Install -AcceptAll -IgnoreReboot
+#endregion
+
+#region Firewall Lockdown + Lumma C2 Blocks
+Write-Host "🔒 Locking down Windows Firewall + blocking Lumma C2..."
+netsh advfirewall export "$BackupDir\FirewallBackup.wfw"
+Set-NetFirewallProfile -Profile Domain,Public,Private -DefaultInboundAction Block -DefaultOutboundAction Allow -LogAllowed True -LogBlocked True -LogFileName "$TempDir\pfirewall.log"
+
+# Lumma IPv4
+New-NetFirewallRule -DisplayName "Block Lumma IPv4" -Direction Out -Action Block `
+  -RemoteAddress 45.9.148.221,193.233.20.21,185.215.113.40,91.219.236.15,162.55.235.42,5.61.56.11,91.219.237.244,94.158.244.13
+
+# Lumma IPv6
+New-NetFirewallRule -DisplayName "Block Lumma IPv6" -Direction Out -Action Block `
+  -RemoteAddress 2a0b:4d07:2::221,2a0b:4d07:20::21,2a0b:4d07:113::40,2a0b:4d07:236::15,2a01:4f8:c2::235:42,2a0b:4d07:56::11,2a0b:4d07:237::244,2a0b:4d07:158::13
+#endregion
+
+#region Nuke Bloat Apps (Keep MS Store + Office)
+Write-Host "💣 Removing bloat apps (Office & Store safe)..."
+$bloatApps = @(
+    "Microsoft.3DBuilder","Microsoft.3DViewer","Microsoft.Appconnector","Microsoft.BingFinance",
+    "Microsoft.BingNews","Microsoft.BingSports","Microsoft.BingTranslator","Microsoft.BingWeather",
+    "Microsoft.GetHelp","Microsoft.Getstarted","Microsoft.Messaging","Microsoft.Microsoft3DViewer",
+    "Microsoft.MicrosoftOfficeHub","Microsoft.MicrosoftSolitaireCollection","Microsoft.MicrosoftStickyNotes",
+    "Microsoft.MinecraftUWP","Microsoft.MixedReality.Portal","Microsoft.MSPaint","Microsoft.NetworkSpeedTest",
+    "Microsoft.News","Microsoft.OneConnect","Microsoft.People",
+    "Microsoft.Print3D","Microsoft.SkypeApp","Microsoft.Todos","Microsoft.Wallet",
+    "Microsoft.Whiteboard","Microsoft.WindowsAlarms","Microsoft.WindowsCamera","Microsoft.windowscommunicationsapps",
+    "Microsoft.WindowsFeedbackHub","Microsoft.WindowsMaps","Microsoft.WindowsSoundRecorder",
+    "Microsoft.XboxApp","Microsoft.Xbox.TCUI","Microsoft.XboxGameOverlay","Microsoft.XboxGamingOverlay",
+    "Microsoft.XboxIdentityProvider","Microsoft.XboxSpeechToTextOverlay","Microsoft.YourPhone",
+    "Microsoft.ZuneMusic","Microsoft.ZuneVideo","Microsoft.PowerAutomateDesktop",
+    "Microsoft.Copilot","Microsoft.Windows.Recall","Microsoft.Cortana"
+)
+
+foreach ($app in $bloatApps) {
+    Get-AppxPackage -AllUsers $app | Remove-AppxPackage -ErrorAction SilentlyContinue
+    Get-AppxProvisionedPackage -Online | Where-Object DisplayName -like $app | Remove-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue
+}
+
+# Nuke Common Crapware
+$crapWare = @(
+    "*capcut*", "*tiktok*", "*keeper*", "*bubblewitch*", "*disney*",
+    "*marchofempires*", "*facebook*", "*twitter*", "*instagram*", "*spotify*", "*king.com*"
+)
+
+foreach ($junk in $crapWare) {
+    Get-AppxPackage -AllUsers $junk | Remove-AppxPackage -ErrorAction SilentlyContinue
+}
+#endregion
+
+#region Disable RDP Completely
+Write-Host "🛑 Disabling Remote Desktop Protocol..."
+Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 1
+Disable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
+#endregion
+
+#region Account & Policy Lockdown
+Write-Host "👤 Setting account policies (min password = 1)..."
+secedit /export /cfg "$TempDir\secpol.cfg"
+(gc "$TempDir\secpol.cfg") -replace "MinimumPasswordLength = .+", "MinimumPasswordLength = 1" |
+    Set-Content "$TempDir\secpol.cfg"
+(gc "$TempDir\secpol.cfg") -replace "PasswordComplexity = .+", "PasswordComplexity = 0" |
+    Set-Content "$TempDir\secpol.cfg"
+(gc "$TempDir\secpol.cfg") -replace "LockoutBadCount = .+", "LockoutBadCount = 5" |
+    Set-Content "$TempDir\secpol.cfg"
+secedit /configure /db secedit.sdb /cfg "$TempDir\secpol.cfg" /quiet
+
+# Enable built-in Administrator
+net user Administrator /active:yes
+# Set current user to admin role
+Add-LocalGroupMember -Group "Administrators" -Member $env:UserName -ErrorAction SilentlyContinue
+#endregion
+
+#region UAC, LSA, DEP
+Write-Host "🛡️ Enabling UAC + LSA Protection + DEP AlwaysOn..."
+New-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name "ConsentPromptBehaviorAdmin" -Value 2 -PropertyType DWord -Force
+New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" -Name "RunAsPPL" -Value 1 -PropertyType DWord -Force
+bcdedit /set {current} nx AlwaysOn
+#endregion
+
+#region Telemetry / Full Nuke
+Write-Host "🧹 Good riddance telemetry..." -ForegroundColor Red
+# DataCollection policies
+$dcKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+New-Item -Path $dcKey -Force | Out-Null
+$dcProps = @{
+    AllowTelemetry                                   = 0
+    DisableDiagnosticDataViewer                      = 1
+    DisableTelemetryOptInChangeNotifications         = 1
+    DisableOptInSettingsUI                           = 1
+    LimitOptionalDiagnosticDataForDesktopAnalytics   = 1
+    ConfigureConnectedUserExperiencesAndTelemetry    = 0
+}
+foreach ($name in $dcProps.Keys) {
+    New-ItemProperty -Path $dcKey -Name $name -PropertyType DWord -Value $dcProps[$name] -Force | Out-Null
+}
+
+# Windows Error Reporting
+$werKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Error Reporting'
+New-Item -Path $werKey -Force | Out-Null
+$werProps = @{
+    Disabled                     = 1
+    DontShowUI                   = 1
+    LoggingDisabled              = 1
+    DontSendAdditionalData       = 1
+    AutoApproveOSDumps           = 0
+    BypassDataThrottling         = 1
+    BypassNetworkCostThrottling  = 1
+    BypassPowerThrottling        = 1
+    DisableArchive               = 1
+    DisableQueue                 = 1
+    ReportOperatingSystemErrors  = 0
+    ReportUnplannedShutdowns     = 0
+}
+foreach ($n in $werProps.Keys) {
+    New-ItemProperty -Path $werKey -Name $n -PropertyType DWord -Value $werProps[$n] -Force | Out-Null
+}
+
+# Windows AI Recall
+$aiKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI'
+New-Item -Path $aiKey -Force | Out-Null
+$aiProps = @{
+    AllowRecallToBeEnabled             = 0
+    AllowExportRecallSnapshots         = 0
+    TurnOffSavingSnapshotsForRecall    = 1
+    DisableClickToDo                   = 1
+    DisableSettingsAgentSearchExperience = 1
+    MaxDurationForRecallSnapshots      = 0
+    MaxStorageForRecallSnapshots       = 0
+}
+foreach ($n in $aiProps.Keys) {
+    New-ItemProperty -Path $aiKey -Name $n -PropertyType DWord -Value $aiProps[$n] -Force | Out-Null
+}
+
+# Disable related services
+$svcs = @('DiagTrack','dmwappushservice','WpnService','WerSvc','lfsvc')
+foreach ($s in $svcs) {
+    if (Get-Service -Name $s -ErrorAction SilentlyContinue) {
+        Stop-Service $s -Force
+        Set-Service $s -StartupType Disabled
+    }
+}
+
+# Disable diagnostic tasks
+$tasks = @(
+    'Microsoft\Windows\Application Experience\Microsoft Compatibility Appraiser',
+    'Microsoft\Windows\Customer Experience Improvement Program\Consolidator',
+    'Microsoft\Windows\Customer Experience Improvement Program\KernelCeipTask',
+    'Microsoft\Windows\Customer Experience Improvement Program\UsbCeip'
+)
+foreach ($t in $tasks) {
+    schtasks /Change /TN "$t" /Disable 2>$null
+}
+
+# Firewall blocks
+$endpoints = @(
+    'vortex.data.microsoft.com',
+    'telemetry.microsoft.com',
+    'settings-win.data.microsoft.com',
+    'watson.telemetry.microsoft.com'
+)
+foreach ($e in $endpoints) {
+    $ips = [System.Net.Dns]::GetHostAddresses($e) | Where-Object { $_.AddressFamily -eq 'InterNetwork' } | Select-Object -Unique
+    foreach ($ip in $ips) {
+        New-NetFirewallRule -DisplayName "Block Telemetry $e ($ip)" -Direction Outbound -RemoteAddress $ip -Action Block -Protocol Any -ErrorAction SilentlyContinue
+    }
+}
+#endregion
+
+#region Finalize + Reboot
+Stop-Transcript
+Write-Host "GOODBYE WINDOWSTELEMETRY VIA DEFCONABSOLUTION - ABSOLUTELY NUKED TELEMETRY" -ForegroundColor Red
+$resp = Read-Host "⚠️ Reboot is required. Reboot now? (Y/N)"
+if ($resp -match '^[Yy]') { Restart-Computer -Force }
+#endregion
