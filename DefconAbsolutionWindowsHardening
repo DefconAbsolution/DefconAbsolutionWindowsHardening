@@ -2,7 +2,6 @@
     DEFCON Absolution Mode – Windows 11 Kill Script
     ------------------------------------------------
     - Security updates only
-    - Firewall lockdown + Lumma C2 blocks
     - Remove ALL bloat apps (leave MS Store + Office)
     - Remove AI (Copilot, Recall, Cortana)
     - Disable RDP entirely
@@ -44,15 +43,6 @@ Get-WindowsUpdate -Category SecurityUpdates -Install -AcceptAll -IgnoreReboot
 Write-Host "🔒 Locking down Windows Firewall + blocking Lumma C2..."
 netsh advfirewall export "$BackupDir\FirewallBackup.wfw"
 Set-NetFirewallProfile -Profile Domain,Public,Private -DefaultInboundAction Block -DefaultOutboundAction Allow -LogAllowed True -LogBlocked True -LogFileName "$TempDir\pfirewall.log"
-
-# Lumma IPv4
-New-NetFirewallRule -DisplayName "Block Lumma IPv4" -Direction Out -Action Block `
-  -RemoteAddress 45.9.148.221,193.233.20.21,185.215.113.40,91.219.236.15,162.55.235.42,5.61.56.11,91.219.237.244,94.158.244.13
-
-# Lumma IPv6
-New-NetFirewallRule -DisplayName "Block Lumma IPv6" -Direction Out -Action Block `
-  -RemoteAddress 2a0b:4d07:2::221,2a0b:4d07:20::21,2a0b:4d07:113::40,2a0b:4d07:236::15,2a01:4f8:c2::235:42,2a0b:4d07:56::11,2a0b:4d07:237::244,2a0b:4d07:158::13
-#endregion
 
 #region Nuke Bloat Apps (Keep MS Store + Office)
 Write-Host "💣 Removing bloat apps (Office & Store safe)..."
